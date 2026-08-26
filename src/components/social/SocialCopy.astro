@@ -1,0 +1,21 @@
+---
+// Copy island. Every string the client scripts need is resolved server-side by
+// t() and shipped as JSON data, because a string literal inside a client script
+// is copy that no locale gate can ever see (CLAUDE.md). `is:inline` keeps Astro
+// from treating the payload as JavaScript.
+import { t } from '../../lib/i18n';
+import { COPY_ISLAND_ID, runtimeStrings } from '../../lib/social';
+
+interface Props { locale: string }
+const { locale } = Astro.props;
+// Every `<` becomes its JSON unicode escape, because neither JSON.stringify nor
+// set:html escapes it: a locale value carrying a literal closing script tag
+// would end this element, emit its tail as live markup and truncate the JSON, so
+// copy() would throw and EVERY runtime string on the page would silently go
+// blank at once. The escape is valid JSON, so JSON.parse hands the original text
+// back. locales.test.mjs only checks parity and placeholders — nothing upstream
+// catches this.
+const payload = JSON.stringify(runtimeStrings((key) => t(locale, key))).replace(/</g, '\\u003c');
+---
+
+<script id={COPY_ISLAND_ID} type="application/json" is:inline set:html={payload}></script>

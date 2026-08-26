@@ -1,0 +1,230 @@
+---
+// The week planner. It renders ATTEMPTS, not intentions: every chip on a card
+// is one real `variants` row with its own state, so a post that published on
+// Instagram and failed on TikTok looks exactly like that (plan §2).
+import { intlOf, localePath, t } from '../../lib/i18n';
+
+interface Props { locale: string }
+const { locale } = Astro.props;
+---
+
+<section
+  class="cal"
+  id="social-calendar"
+  data-intl={intlOf(locale)}
+  data-composer={localePath(locale, '/social/composer')}
+>
+  <header class="bar">
+    <button type="button" data-week="-1">{t(locale, 'social.calendar.prev')}</button>
+    <button type="button" data-week="0">{t(locale, 'social.calendar.today')}</button>
+    <button type="button" data-week="1">{t(locale, 'social.calendar.next')}</button>
+    <strong class="range" id="social-week-range"></strong>
+  </header>
+  <p class="msg" id="social-cal-msg" role="status"></p>
+  <div class="grid is-hidden" id="social-cal-grid"></div>
+</section>
+
+<script>
+  import {
+    copy, dayKey, el, endOfWeek, fill, handleAuthError, listPostsBetween, listVariantsOf,
+    parsePbDate, startOfWeek, weekDays,
+    type Post, type Variant,
+  } from '../../lib/social';
+  import { isLoggedIn } from '../../lib/pb';
+  import { SIGNED_IN_EVENT, SIGNED_OUT_EVENT } from '../../lib/auth';
+
+  const c = copy();
+  const root = document.getElementById('social-calendar') as HTMLElement;
+  const grid = document.getElementById('social-cal-grid') as HTMLElement;
+  const msg = document.getElementById('social-cal-msg') as HTMLElement;
+  const range = document.getElementById('social-week-range') as HTMLElement;
+  const intl = root.dataset.intl || 'en';
+  const composerHref = root.dataset.composer || '/';
+
+  const dayFmt = new Intl.DateTimeFormat(intl, { weekday: 'long', day: 'numeric', month: 'short' });
+  const timeFmt = new Intl.DateTimeFormat(intl, { hour: '2-digit', minute: '2-digit' });
+  const rangeFmt = new Intl.DateTimeFormat(intl, { day: 'numeric', month: 'long' });
+
+  let offset = 0;
+
+  function card(post: Post, variants: Variant[]): HTMLElement {
+    const wrap = el('article', 'card');
+    // parsePbDate, never `new Date(raw)`: PocketBase's own format is
+    // `2026-08-04 19:30:00.000Z` and only V8 is lenient enough to accept it.
+    if (post.slot_at) wrap.appendChild(el('p', 'time', timeFmt.format(parsePbDate(post.slot_at))));
+    wrap.appendChild(el('h4', undefined, post.title || c['social.composer.untitled']));
+    const status = post.status || 'draft';
+    wrap.appendChild(el('p', `pill status-${status}`, c[`social.status.${status}`] || status));
+    const chips = el('ul', 'chips');
+    for (const v of variants) {
+      const state = v.state || 'draft';
+      const label = `${c[`social.network.${v.network}`] || v.network} · ${c[`social.state.${state}`] || state}`;
+      chips.appendChild(el('li', `chip state-${state}`, label));
+    }
+    wrap.appendChild(chips);
+    const edit = el('a', 'edit', c['social.calendar.edit']);
+    edit.href = `${composerHref}?post=${encodeURIComponent(post.id)}`;
+    wrap.appendChild(edit);
+    return wrap;
+  }
+
+  async function render() {
+    if (!isLoggedIn()) {
+      grid.classList.add('is-hidden');
+      msg.textContent = c['social.auth.required'] || '';
+      return;
+    }
+    const start = startOfWeek(new Date(), offset);
+    const end = endOfWeek(start);
+    range.textContent = fill(c['social.calendar.week'] || '', {
+      from: rangeFmt.format(start),
+      to: rangeFmt.format(new Date(end.getTime() - 1)),
+    });
+    msg.textContent = c['social.calendar.loading'] || '';
+    grid.classList.add('is-hidden');
+    try {
+      const posts = await listPostsBetween(start, end);
+      const variants = await listVariantsOf(posts.items.map((p) => p.id));
+      const byPost = new Map<string, Variant[]>();
+      for (const v of variants.items) {
+        byPost.set(v.post, [...(byPost.get(v.post) ?? []), v]);
+      }
+      grid.replaceChildren();
+      for (const day of weekDays(start)) {
+        const col = el('div', 'day');
+        col.appendChild(el('h3', undefined, dayFmt.format(day)));
+        const slot = posts.items.filter((p) => p.slot_at && dayKey(parsePbDate(p.slot_at)) === dayKey(day));
+        if (!slot.length) col.appendChild(el('p', 'none', c['social.calendar.emptyday']));
+        for (const post of slot) col.appendChild(card(post, byPost.get(post.id) ?? []));
+        grid.appendChild(col);
+      }
+      msg.textContent = '';
+      grid.classList.remove('is-hidden');
+    } catch (e) {
+      msg.textContent = c['social.calendar.error'] || '';
+      // An expired token drops the session and re-renders as logged out, so the
+      // sign-in form comes back instead of a permanent generic error.
+      handleAuthError(e);
+    }
+  }
+
+  for (const button of root.querySelectorAll<HTMLButtonElement>('[data-week]')) {
+    button.addEventListener('click', () => {
+      const step = Number(button.dataset.week);
+      offset = step === 0 ? 0 : offset + step;
+      void render();
+    });
+  }
+  // The auth brick's protocol, imported rather than typed: this listened for
+  // `social:auth`, published by a sign-in panel this brick shipped beside the
+  // gate. One door now, and the board re-renders on the same event every app uses.
+  document.addEventListener(SIGNED_IN_EVENT, () => void render());
+  document.addEventListener(SIGNED_OUT_EVENT, () => void render());
+  void render();
+</script>
+
+<style>
+  .bar {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--space-2);
+    align-items: center;
+    margin-bottom: var(--space-4);
+  }
+  .bar button {
+    font: inherit;
+    cursor: pointer;
+    color: var(--text);
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: var(--space-2) var(--space-3);
+  }
+  .bar button:hover { border-color: var(--primary); }
+  .range { margin-inline-start: auto; color: var(--muted); }
+  .msg { color: var(--muted); }
+  .grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+    gap: var(--space-3);
+  }
+  /* The brick's only visibility toggle, and the last of its undeclared runtime
+     protocol. It was a `:global(.is-hidden)` declared inside the sign-in panel
+     and depended on from here — one component publishing a global rule another
+     silently required. It is scoped now, on the element that actually carries
+     it: `#social-cal-grid` is server-rendered so it has this component's scope
+     attribute, and `.grid.is-hidden` outranks `.grid` without `!important`. */
+  .grid.is-hidden { display: none; }
+
+  /* Everything below is created by the script above, so it has no scope
+     attribute and must be reached globally. */
+  .grid :global(.day) {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-lg);
+    padding: var(--space-3);
+    display: grid;
+    gap: var(--space-2);
+    align-content: start;
+  }
+  .grid :global(.day h3) {
+    margin: 0;
+    font-size: 0.85rem;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: var(--muted);
+  }
+  .grid :global(.none) {
+    margin: 0;
+    font-size: 0.85rem;
+    color: var(--muted);
+  }
+  .grid :global(.card) {
+    display: grid;
+    gap: var(--space-1);
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: var(--space-2);
+  }
+  .grid :global(.card h4) { margin: 0; font-size: 0.95rem; }
+  .grid :global(.time) { margin: 0; font-size: 0.8rem; color: var(--muted); }
+  .grid :global(.pill) {
+    margin: 0;
+    justify-self: start;
+    font-size: 0.7rem;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 0 var(--space-1);
+    color: var(--muted);
+  }
+  .grid :global(.status-approved), .grid :global(.status-published) { color: var(--ok); border-color: var(--ok); }
+  .grid :global(.status-failed) { color: var(--danger); border-color: var(--danger); }
+  .grid :global(.status-in_review) { color: var(--warn); border-color: var(--warn); }
+  .grid :global(.status-scheduled) { color: var(--accent); border-color: var(--accent); }
+  .grid :global(.chips) {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--space-1);
+  }
+  /* Networks are told apart by their label, never by a brand colour: the theme
+     token vocabulary is closed (docs/theme-contract.md) and the states are what
+     an operator actually scans for. */
+  .grid :global(.chip) {
+    font-size: 0.7rem;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 0 var(--space-1);
+    color: var(--muted);
+  }
+  .grid :global(.state-published) { color: var(--ok); border-color: var(--ok); }
+  .grid :global(.state-failed) { color: var(--danger); border-color: var(--danger); }
+  .grid :global(.state-handoff) { color: var(--warn); border-color: var(--warn); }
+  .grid :global(.state-queued), .grid :global(.state-scheduled) { color: var(--accent); border-color: var(--accent); }
+  .grid :global(.edit) { font-size: 0.75rem; color: var(--primary); }
+</style>

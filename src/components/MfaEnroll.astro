@@ -1,0 +1,190 @@
+---
+// MfaEnroll.astro — enrol, check and remove the second factor of the identity
+// that is signed in.
+//
+// The obligation is enforced by the PocketBase bridge (`brotea-roles.js`), and
+// until this existed there was no way to comply with it: `BROTEA_REQUIRE_MFA_*`
+// could only ever lock people out. A policy whose subjects cannot obey it is
+// not a policy.
+//
+// It lives in `auth` and not in the admin panel on purpose. The people the
+// policy points at are administrators of client apps, who have no access to the
+// panel — that app holds the service key and is deliberately the only one that
+// does. Every app with an identity can show this.
+//
+// All markup is server-rendered and visibility is `data-state` on this
+// component's own id: Astro scoped styles never match `createElement` DOM, and
+// `hidden` loses to any author `display` rule.
+import { t } from '../lib/i18n';
+
+interface Props { locale: string }
+const { locale } = Astro.props;
+---
+
+<section
+  id="brotea-mfa"
+  data-state="loading"
+  data-msg-error={t(locale, 'auth.mfa.error')}
+  data-msg-removed={t(locale, 'auth.mfa.removed')}
+>
+  <h2>{t(locale, 'auth.security.title')}</h2>
+  <p class="lead">{t(locale, 'auth.security.lead')}</p>
+
+  <p class="state" data-when="loading">{t(locale, 'auth.working')}</p>
+
+  <div class="state" data-when="none">
+    <p>{t(locale, 'auth.mfa.none')}</p>
+    <button type="button" class="primary" id="brotea-mfa-start">{t(locale, 'auth.mfa.enroll')}</button>
+  </div>
+
+  <div class="state" data-when="enrolling">
+    <p>{t(locale, 'auth.mfa.scan')}</p>
+    <img id="brotea-mfa-qr" alt={t(locale, 'auth.mfa.qr.alt')} />
+    <p class="secret">{t(locale, 'auth.mfa.secret')} <code id="brotea-mfa-secret"></code></p>
+    <form id="brotea-mfa-confirm">
+      <label>
+        {t(locale, 'auth.mfa.code')}
+        <input
+          type="text" name="code" required
+          inputmode="numeric" autocomplete="one-time-code"
+          pattern="[0-9]*" maxlength="8"
+        />
+      </label>
+      <button type="submit" class="primary">{t(locale, 'auth.mfa.submit')}</button>
+    </form>
+  </div>
+
+  <div class="state" data-when="enrolled">
+    <p class="ok">{t(locale, 'auth.mfa.enrolled')}</p>
+    <button type="button" class="danger" id="brotea-mfa-remove">{t(locale, 'auth.mfa.remove')}</button>
+  </div>
+
+  <p class="msg" id="brotea-mfa-msg" role="alert"></p>
+</section>
+
+<script>
+  import { listFactors, enrollTotp, verifyTotp, unenrollFactor } from '../lib/auth';
+
+  const box = document.getElementById('brotea-mfa') as HTMLElement;
+  const msg = document.getElementById('brotea-mfa-msg') as HTMLElement;
+  const qr = document.getElementById('brotea-mfa-qr') as HTMLImageElement;
+  const secret = document.getElementById('brotea-mfa-secret') as HTMLElement;
+  const confirm = document.getElementById('brotea-mfa-confirm') as HTMLFormElement;
+
+  let factorId = '';
+
+  const show = (state: string) => { box.dataset.state = state; };
+  const fail = () => { msg.textContent = box.dataset.msgError ?? ''; };
+
+  async function refresh() {
+    try {
+      const verified = (await listFactors()).filter((f) => f.status === 'verified');
+      factorId = verified[0]?.id ?? '';
+      show(factorId ? 'enrolled' : 'none');
+    } catch {
+      // Never claim "no factor" when we could not ask: that reads as an
+      // invitation to enrol a second one.
+      fail();
+      show('loading');
+    }
+  }
+
+  document.getElementById('brotea-mfa-start')!.addEventListener('click', async () => {
+    msg.textContent = '';
+    try {
+      const started = await enrollTotp(document.title || 'Brotea');
+      factorId = started.id;
+      // The QR is a data: URI minted by Supabase — an attribute, not a node, so
+      // it cannot fall outside this component's style scope.
+      qr.src = started.qr;
+      secret.textContent = started.secret;
+      show('enrolling');
+    } catch {
+      fail();
+    }
+  });
+
+  confirm.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    msg.textContent = '';
+    try {
+      // The verify response is an aal2 session and `verifyTotp` stores it. That
+      // matters here as much as at sign-in: finishing enrolment while holding
+      // the old aal1 token would leave this browser signed in to an identity
+      // the bridge now refuses.
+      await verifyTotp(factorId, String(new FormData(confirm).get('code') || ''));
+      confirm.reset();
+      await refresh();
+    } catch {
+      fail();
+      confirm.reset();
+    }
+  });
+
+  document.getElementById('brotea-mfa-remove')!.addEventListener('click', async () => {
+    msg.textContent = '';
+    try {
+      await unenrollFactor(factorId);
+      msg.textContent = box.dataset.msgRemoved ?? '';
+      await refresh();
+    } catch {
+      fail();
+    }
+  });
+
+  void refresh();
+</script>
+
+<style>
+  #brotea-mfa {
+    max-width: 480px;
+    font-family: var(--font-sans);
+    color: var(--text);
+  }
+  h2 { font-family: var(--font-display); margin: 0 0 var(--space-2); }
+  .lead { color: var(--muted); margin: 0 0 var(--space-5); }
+  .state { display: none; }
+  #brotea-mfa[data-state='loading'] .state[data-when='loading'],
+  #brotea-mfa[data-state='none'] .state[data-when='none'],
+  #brotea-mfa[data-state='enrolling'] .state[data-when='enrolling'],
+  #brotea-mfa[data-state='enrolled'] .state[data-when='enrolled'] { display: block; }
+  #brotea-mfa-qr {
+    display: block;
+    width: 180px;
+    height: 180px;
+    margin: var(--space-4) 0;
+    background: #fff;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+  }
+  .secret { color: var(--muted); font-size: 0.9rem; }
+  code {
+    font-family: var(--font-mono, monospace);
+    letter-spacing: 0.08em;
+    color: var(--text);
+  }
+  label { display: block; margin: var(--space-4) 0; font-weight: 600; font-size: 0.95rem; }
+  input {
+    display: block;
+    width: 100%;
+    margin-top: 0.35rem;
+    padding: 0.55rem;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    background: var(--bg);
+    color: var(--text);
+    font: inherit;
+    letter-spacing: 0.3em;
+  }
+  .primary, .danger {
+    padding: 0.6rem 1.4rem;
+    border-radius: var(--radius);
+    font: inherit;
+    font-weight: 600;
+    cursor: pointer;
+  }
+  .primary { border: 1px solid var(--primary); background: var(--primary); color: var(--primary-contrast); }
+  .danger { border: 1px solid var(--border); background: var(--bg); color: var(--danger); }
+  .ok { color: var(--ok, var(--text)); font-weight: 600; }
+  .msg { min-height: 1.2em; color: var(--danger); font-size: 0.9rem; }
+</style>

@@ -1,0 +1,17 @@
+/* Base element styles — template-owned, themed entirely through the token
+ * variables in theme.css (see docs/theme-contract.md). */
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font-sans);
+}
+h1, h2, h3 { font-family: var(--font-display); }
+a { color: var(--primary); }
+code {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: calc(var(--radius) / 2);
+  padding: 0 var(--space-1);
+}

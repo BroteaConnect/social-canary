@@ -1,0 +1,81 @@
+---
+// AuthStatus.astro — who is signed in, and the way out.
+//
+// The brick had a gate and no exit: `signOut()` existed in the library and no
+// component ever called it. An app could let you in and never let you leave,
+// which is why the social calendar shipped its own sign-in panel with its own
+// sign-out button beside this brick's gate — two doors into one app, and the
+// second one went straight to PocketBase without touching the identity plane.
+//
+// Same two gotchas as AuthGate, designed around the same way: every node is
+// server-rendered (Astro scoped styles never match `createElement` DOM) and
+// visibility is an attribute selector on this component's own id, never the
+// `hidden` attribute, which loses to any author `display` rule.
+import { localePath, t } from '../lib/i18n';
+
+interface Props { locale: string }
+const { locale } = Astro.props;
+---
+
+<div id="brotea-auth-status" data-state="anon">
+  <span class="who" id="brotea-auth-who"></span>
+  <a class="security" href={localePath(locale, '/auth/security')}>{t(locale, 'auth.security.link')}</a>
+  <button type="button" class="signout" id="brotea-auth-signout">{t(locale, 'auth.signout')}</button>
+</div>
+
+<script>
+  import { currentUser, signOutAndAnnounce, SIGNED_IN_EVENT, SIGNED_OUT_EVENT } from '../lib/auth';
+
+  const box = document.getElementById('brotea-auth-status') as HTMLElement;
+  const who = document.getElementById('brotea-auth-who') as HTMLElement;
+
+  function show(user: { email?: string } | null) {
+    box.dataset.state = user ? 'signedin' : 'anon';
+    who.textContent = user?.email ?? '';
+  }
+
+  document.addEventListener(SIGNED_IN_EVENT, (e) => show((e as CustomEvent).detail));
+  document.addEventListener(SIGNED_OUT_EVENT, () => show(null));
+  document.getElementById('brotea-auth-signout')!.addEventListener('click', () => signOutAndAnnounce());
+
+  // The cached user, so an already-signed-in browser does not flash an empty
+  // bar while `restore()` talks to the identity plane.
+  show(currentUser());
+</script>
+
+<style>
+  #brotea-auth-status {
+    display: flex;
+    gap: var(--space-3);
+    align-items: center;
+    justify-content: flex-end;
+    margin-bottom: var(--space-4);
+    font-family: var(--font-sans);
+  }
+  /* one extra attribute beats the rule above without !important */
+  #brotea-auth-status[data-state='anon'] { display: none; }
+  .who {
+    color: var(--muted);
+    font-size: 0.9rem;
+  }
+  .signout {
+    font: inherit;
+    font-size: 0.9rem;
+    cursor: pointer;
+    color: var(--text);
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: var(--space-1) var(--space-3);
+  }
+  .signout:hover { border-color: var(--primary); color: var(--primary); }
+  /* The only route to the enrolment screen. It is here rather than in the nav
+     because it is only meaningful to somebody signed in, which is exactly when
+     this bar exists. */
+  .security {
+    color: var(--muted);
+    font-size: 0.9rem;
+    text-decoration: underline;
+  }
+  .security:hover { color: var(--primary); }
+</style>

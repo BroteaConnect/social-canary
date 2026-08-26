@@ -1,0 +1,262 @@
+{
+  "$comment": "Composed from the bricks installed in this app. Apply with: node scripts/pb-schema.mjs <slug> pb/schema.json",
+  "collections": [
+    {
+      "$comment": "PocketBase ships `users` with createRule = \"\", i.e. ANYONE on the internet may register — and since every editorial collection grants full CRUD to `@request.auth.id != \"\"`, a stranger who signed up could list, edit and delete every brand, asset, post and variant of a public app. `create: null` makes account creation superuser-only: operators are created by the factory, never by self-signup. It is pinned here, declaratively, so a re-provision or a re-apply cannot quietly restore the default. `fields: []` is deliberate: pb-schema.mjs merges the desired fields over the live ones BY NAME, so an empty desired list preserves every built-in auth field (email, password, verified, tokenKey…) and changes nothing but the rules. `type: \"auth\"` is mandatory — pb-schema.mjs defaults to \"base\" and PocketBase would reject the PATCH. First in the list so `posts.approved_by` resolves on pass 1. `update`/`delete` are null for a reason found the hard way on 2026-08-14: PocketBase rules are per RECORD, not per field, so its default `id = @request.auth.id` (\"you may edit yourself\") lets an operator PATCH any field of their own row — including the `role` the auth brick adds. A member promoted themselves to admin with one request on a canary. Nothing legitimate is lost: the factory writes these rows through the DAO, which does not consult these rules.",
+      "name": "users",
+      "type": "auth",
+      "fields": [],
+      "rules": {
+        "list": "id = @request.auth.id",
+        "view": "id = @request.auth.id",
+        "create": null,
+        "update": null,
+        "delete": null
+      }
+    },
+    {
+      "name": "brands",
+      "fields": [
+        {
+          "name": "name",
+          "type": "text",
+          "required": true
+        },
+        {
+          "name": "timezone",
+          "type": "text"
+        },
+        {
+          "name": "default_locale",
+          "type": "text"
+        },
+        {
+          "name": "created",
+          "type": "autodate",
+          "onCreate": true,
+          "onUpdate": false
+        },
+        {
+          "name": "updated",
+          "type": "autodate",
+          "onCreate": true,
+          "onUpdate": true
+        }
+      ],
+      "rules": {
+        "list": "@request.auth.id != \"\"",
+        "view": "@request.auth.id != \"\"",
+        "create": "@request.auth.id != \"\"",
+        "update": "@request.auth.id != \"\"",
+        "delete": "@request.auth.id != \"\""
+      }
+    },
+    {
+      "name": "assets",
+      "fields": [
+        {
+          "name": "brand",
+          "type": "relation",
+          "collection": "brands",
+          "maxSelect": 1
+        },
+        {
+          "name": "file",
+          "type": "file",
+          "maxSelect": 1,
+          "maxSize": 104857600,
+          "thumbs": [
+            "600x400"
+          ]
+        },
+        {
+          "name": "kind",
+          "type": "select",
+          "maxSelect": 1,
+          "values": [
+            "image",
+            "video",
+            "audio",
+            "document"
+          ]
+        },
+        {
+          "name": "alt_text",
+          "type": "text"
+        },
+        {
+          "name": "checksum",
+          "type": "text"
+        },
+        {
+          "name": "created",
+          "type": "autodate",
+          "onCreate": true,
+          "onUpdate": false
+        },
+        {
+          "name": "updated",
+          "type": "autodate",
+          "onCreate": true,
+          "onUpdate": true
+        }
+      ],
+      "rules": {
+        "list": "@request.auth.id != \"\"",
+        "view": "@request.auth.id != \"\"",
+        "create": "@request.auth.id != \"\"",
+        "update": "@request.auth.id != \"\"",
+        "delete": "@request.auth.id != \"\""
+      }
+    },
+    {
+      "name": "posts",
+      "fields": [
+        {
+          "name": "brand",
+          "type": "relation",
+          "collection": "brands",
+          "maxSelect": 1
+        },
+        {
+          "name": "title",
+          "type": "text",
+          "required": true
+        },
+        {
+          "name": "body",
+          "type": "editor"
+        },
+        {
+          "name": "slot_at",
+          "type": "date"
+        },
+        {
+          "name": "status",
+          "type": "select",
+          "maxSelect": 1,
+          "values": [
+            "draft",
+            "in_review",
+            "approved",
+            "scheduled",
+            "published",
+            "failed"
+          ]
+        },
+        {
+          "name": "approved_by",
+          "type": "relation",
+          "collection": "users",
+          "maxSelect": 1
+        },
+        {
+          "name": "created",
+          "type": "autodate",
+          "onCreate": true,
+          "onUpdate": false
+        },
+        {
+          "name": "updated",
+          "type": "autodate",
+          "onCreate": true,
+          "onUpdate": true
+        }
+      ],
+      "rules": {
+        "list": "@request.auth.id != \"\"",
+        "view": "@request.auth.id != \"\"",
+        "create": "@request.auth.id != \"\"",
+        "update": "@request.auth.id != \"\"",
+        "delete": "@request.auth.id != \"\""
+      }
+    },
+    {
+      "name": "variants",
+      "fields": [
+        {
+          "name": "post",
+          "type": "relation",
+          "collection": "posts",
+          "maxSelect": 1
+        },
+        {
+          "name": "network",
+          "type": "select",
+          "maxSelect": 1,
+          "values": [
+            "youtube",
+            "facebook",
+            "instagram",
+            "tiktok",
+            "linkedin"
+          ]
+        },
+        {
+          "name": "body",
+          "type": "text"
+        },
+        {
+          "name": "media",
+          "type": "relation",
+          "collection": "assets",
+          "maxSelect": 1
+        },
+        {
+          "name": "first_comment",
+          "type": "text"
+        },
+        {
+          "name": "state",
+          "type": "select",
+          "maxSelect": 1,
+          "values": [
+            "draft",
+            "scheduled",
+            "queued",
+            "published",
+            "failed",
+            "handoff",
+            "skipped"
+          ]
+        },
+        {
+          "name": "gateway_job_id",
+          "type": "text"
+        },
+        {
+          "name": "network_url",
+          "type": "url"
+        },
+        {
+          "name": "telegram_message_id",
+          "type": "number",
+          "onlyInt": true
+        },
+        {
+          "name": "last_error",
+          "type": "text"
+        },
+        {
+          "name": "created",
+          "type": "autodate",
+          "onCreate": true,
+          "onUpdate": false
+        },
+        {
+          "name": "updated",
+          "type": "autodate",
+          "onCreate": true,
+          "onUpdate": true
+        }
+      ],
+      "rules": {
+        "list": "@request.auth.id != \"\"",
+        "view": "@request.auth.id != \"\"",
+        "create": "@request.auth.id != \"\"",
+        "update": "@request.auth.id != \"\"",
+        "delete": "@request.auth.id != \"\""
+      }
+    }
+  ]
+}

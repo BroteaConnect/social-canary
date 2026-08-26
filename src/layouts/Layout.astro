@@ -1,0 +1,45 @@
+---
+import '../styles/theme.css';
+import '../styles/base.css';
+import Nav from '../components/Nav.astro';
+import { DEFAULT_LOCALE, alternates, dirOf, localePath, stripLocale } from '../lib/i18n';
+
+interface Props { title?: string; locale?: string }
+const { title = 'Social Canary', locale = DEFAULT_LOCALE } = Astro.props;
+
+// The same page in every shipped language. hreflang wants absolute URLs: set
+// `site` in astro.config.mjs and these become absolute automatically.
+const path = stripLocale(Astro.url.pathname);
+const abs = (href: string) => (Astro.site ? new URL(href, Astro.site).href : href);
+---
+
+<!doctype html>
+<html lang={locale} dir={dirOf(locale)}>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>{title}</title>
+    {alternates(path).map((a) => (
+      <link rel="alternate" hreflang={a.hreflang} href={abs(a.href)} />
+    ))}
+    <link rel="alternate" hreflang="x-default" href={abs(localePath(DEFAULT_LOCALE, path))} />
+    <!-- brotea:head -->
+    <meta name="supabase-anon-key" content={import.meta.env.PUBLIC_SUPABASE_ANON_KEY} />
+    <meta name="supabase-url" content={import.meta.env.PUBLIC_SUPABASE_URL} />
+    <meta name="pb-url" content={import.meta.env.PUBLIC_PB_URL} />
+  </head>
+  <body>
+    <Nav locale={locale} />
+    <main>
+      <slot />
+    </main>
+  </body>
+</html>
+
+<style>
+  main {
+    max-width: var(--container);
+    margin: 0 auto;
+    padding: var(--space-5) var(--space-4);
+  }
+</style>

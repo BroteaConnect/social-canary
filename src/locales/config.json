@@ -1,0 +1,23 @@
+{
+  "defaultLocale": "es",
+  "locales": [
+    "en",
+    "es"
+  ],
+  "required": [
+    "en",
+    "es"
+  ],
+  "native": {
+    "en": "English",
+    "es": "Español"
+  },
+  "dir": {
+    "en": "ltr",
+    "es": "ltr"
+  },
+  "intl": {
+    "en": "en-GB",
+    "es": "es-ES"
+  }
+}

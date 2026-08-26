@@ -1,0 +1,487 @@
+---
+// The composer. A `posts` row holds the editorial idea; every network gets its
+// own `variants` row — separate rows, never one blob with a list of networks
+// (plan §2). LinkedIn's row is born in `handoff` because its API Terms forbid
+// automated posting (decision 1), and `handoff` is terminal by design.
+import { POST_STATUSES } from '../../lib/social';
+import { t } from '../../lib/i18n';
+
+interface Props { locale: string }
+const { locale } = Astro.props;
+---
+
+<section class="composer" id="social-composer">
+  <div class="cols">
+    <aside class="picker">
+      <h2>{t(locale, 'social.composer.posts')}</h2>
+      <p class="msg" id="social-posts-msg" role="status"></p>
+      <ul class="posts" id="social-post-list"></ul>
+      <button type="button" id="social-new-post">{t(locale, 'social.composer.newpost')}</button>
+    </aside>
+
+    <div class="editor">
+      <form class="post-form" id="social-post-form">
+        <label>
+          <span>{t(locale, 'social.composer.titlefield')}</span>
+          <input name="title" required />
+        </label>
+        <label>
+          <span>{t(locale, 'social.composer.slot')}</span>
+          <input type="datetime-local" name="slot_at" />
+        </label>
+        <label>
+          <span>{t(locale, 'social.composer.status')}</span>
+          <select name="status">
+            {POST_STATUSES.map((status) => (
+              <option value={status}>{t(locale, `social.status.${status}`)}</option>
+            ))}
+          </select>
+        </label>
+        <label>
+          <span>{t(locale, 'social.composer.brand')}</span>
+          <select name="brand" id="social-brand-select"></select>
+        </label>
+        <label class="wide">
+          <span>{t(locale, 'social.composer.body')}</span>
+          <textarea name="body" rows="5"></textarea>
+        </label>
+        <div class="actions">
+          <button type="submit">{t(locale, 'social.composer.save')}</button>
+          <button type="button" class="ghost" id="social-fanout">
+            {t(locale, 'social.composer.fanout')}
+          </button>
+          <span class="msg" id="social-post-msg" role="status"></span>
+        </div>
+      </form>
+
+      <details class="brand-new">
+        <summary>{t(locale, 'social.composer.brandnew')}</summary>
+        <form class="brand-form" id="social-brand-form">
+          <label>
+            <span>{t(locale, 'social.composer.brandname')}</span>
+            <input name="name" required />
+          </label>
+          <label>
+            <span>{t(locale, 'social.composer.brandtimezone')}</span>
+            <input name="timezone" />
+          </label>
+          <label>
+            <span>{t(locale, 'social.composer.brandlocale')}</span>
+            <input name="default_locale" />
+          </label>
+          <button type="submit">{t(locale, 'social.composer.brandcreate')}</button>
+        </form>
+      </details>
+
+      <h2>{t(locale, 'social.composer.variants')}</h2>
+      <p class="note">{t(locale, 'social.composer.handoffnote')}</p>
+      <div class="variants" id="social-variants"></div>
+    </div>
+  </div>
+</section>
+
+<script>
+  import {
+    NETWORKS, copy, createBrand, el, fanOut, fromLocalInput, handleAuthError, initialState,
+    isAllowedState, listAssets, listBrands, listPosts, listVariantsOf, option, savePost,
+    saveVariant, statesFor, toLocalInput, variantOf,
+    type Asset, type Brand, type Post, type Variant,
+  } from '../../lib/social';
+  import { isLoggedIn } from '../../lib/pb';
+  import { SIGNED_IN_EVENT, SIGNED_OUT_EVENT } from '../../lib/auth';
+
+  const c = copy();
+  const postList = document.getElementById('social-post-list') as HTMLElement;
+  const postsMsg = document.getElementById('social-posts-msg') as HTMLElement;
+  const postForm = document.getElementById('social-post-form') as HTMLFormElement;
+  const postMsg = document.getElementById('social-post-msg') as HTMLElement;
+  const brandSelect = document.getElementById('social-brand-select') as HTMLSelectElement;
+  const brandForm = document.getElementById('social-brand-form') as HTMLFormElement;
+  const variantsBox = document.getElementById('social-variants') as HTMLElement;
+
+  let posts: Post[] = [];
+  let brands: Brand[] = [];
+  let assets: Asset[] = [];
+  let variants: Variant[] = [];
+  let current: Post | null = null;
+
+  const field = (form: HTMLFormElement, name: string) => String(new FormData(form).get(name) ?? '');
+
+  // Every write that can CREATE a variants row goes through here. Two clicks
+  // that overlap would each read the same "this network has no row yet" and both
+  // create one: `UNIQUE (post, network)` cannot be declared in PocketBase, a
+  // duplicate is invisible in the UI (renderVariants resolves a network with
+  // `.find()`) and undeletable, and it turns G3 red. One shared flag serialises
+  // the fan-out and the per-variant saves against each other.
+  let busy = false;
+  async function serialised(button: HTMLButtonElement, work: () => Promise<void>) {
+    if (busy) return;
+    busy = true;
+    button.disabled = true;
+    try {
+      await work();
+    } finally {
+      busy = false;
+      button.disabled = false;
+    }
+  }
+
+  function renderBrands() {
+    brandSelect.replaceChildren(option('', c['social.composer.brandnone'] || ''));
+    for (const b of brands) {
+      brandSelect.appendChild(option(b.id, b.name, current?.brand === b.id));
+    }
+  }
+
+  function renderPostList() {
+    postList.replaceChildren();
+    for (const post of posts) {
+      const item = el('li', post.id === current?.id ? 'post is-current' : 'post');
+      const button = el('button', undefined, post.title || c['social.composer.untitled']);
+      button.type = 'button';
+      button.addEventListener('click', () => void select(post.id));
+      item.appendChild(button);
+      const status = post.status || 'draft';
+      item.appendChild(el('span', `pill status-${status}`, c[`social.status.${status}`] || status));
+      postList.appendChild(item);
+    }
+  }
+
+  function fillPostForm() {
+    postForm.reset();
+    const title = postForm.elements.namedItem('title') as HTMLInputElement;
+    const slot = postForm.elements.namedItem('slot_at') as HTMLInputElement;
+    const status = postForm.elements.namedItem('status') as HTMLSelectElement;
+    const body = postForm.elements.namedItem('body') as HTMLTextAreaElement;
+    title.value = current?.title ?? '';
+    slot.value = toLocalInput(current?.slot_at ?? '');
+    status.value = current?.status || 'draft';
+    body.value = current?.body ?? '';
+    renderBrands();
+  }
+
+  function variantCard(network: string, variant: Variant | undefined): HTMLElement {
+    const wrap = el('article', 'variant');
+    wrap.dataset.network = network;
+    wrap.appendChild(el('h3', undefined, c[`social.network.${network}`] || network));
+
+    // A handoff network is offered ONLY its legal states (no scheduled/queued):
+    // F1's runner and F4's gateway pick rows by state, and LinkedIn must never be
+    // automated. The stored value is preselected when it is legal; when it is not
+    // (a row written before this guard existed) the select falls back to the
+    // network's initial state, so saving the card repairs the row.
+    const state = el('select', 'v-state');
+    const allowed = statesFor(network);
+    const selected = variant?.state && isAllowedState(network, variant.state)
+      ? variant.state : initialState(network);
+    for (const s of allowed) {
+      state.appendChild(option(s, c[`social.state.${s}`] || s, selected === s));
+    }
+    wrap.appendChild(labelled(c['social.variant.state'], state));
+
+    const body = el('textarea', 'v-body');
+    body.rows = 4;
+    body.value = variant?.body ?? '';
+    wrap.appendChild(labelled(c['social.variant.body'], body));
+
+    const first = el('input', 'v-first');
+    first.value = variant?.first_comment ?? '';
+    wrap.appendChild(labelled(c['social.variant.firstcomment'], first));
+
+    const media = el('select', 'v-media');
+    media.appendChild(option('', c['social.variant.nomedia'] || ''));
+    for (const a of assets) {
+      media.appendChild(option(a.id, a.alt_text || a.file || a.id, variant?.media === a.id));
+    }
+    wrap.appendChild(labelled(c['social.variant.media'], media));
+
+    const url = el('input', 'v-url');
+    url.type = 'url';
+    url.value = variant?.network_url ?? '';
+    wrap.appendChild(labelled(c['social.variant.url'], url));
+
+    if (variant?.last_error) {
+      wrap.appendChild(el('p', 'v-err', `${c['social.variant.lasterror']}: ${variant.last_error}`));
+    }
+
+    const save = el('button', 'ghost', c['social.variant.save']);
+    save.type = 'button';
+    const note = el('span', 'msg');
+    save.addEventListener('click', () => void serialised(save, async () => {
+      if (!current) return;
+      const post = current;
+      note.textContent = c['social.composer.saving'] || '';
+      // `variant` is captured from the render that built this card: for a network
+      // with no row yet it is `undefined` FOREVER, so it can never be trusted to
+      // decide create-vs-update. Ask PocketBase instead, right before writing.
+      try {
+        const live = variant ?? await variantOf(post.id, network);
+        await saveVariant(live?.id ?? null, {
+          post: post.id,
+          network,
+          state: state.value,
+          body: body.value,
+          first_comment: first.value,
+          media: media.value,
+          network_url: url.value,
+        });
+        // postMsg too: loadVariants() below replaces this card, taking `note`
+        // with it, and an operator who never sees the outcome retries blindly.
+        postMsg.textContent = c['social.composer.saved'] || '';
+      } catch (e) {
+        postMsg.textContent = c['social.composer.error'] || '';
+        handleAuthError(e);
+      } finally {
+        // Always re-read: after a failure the module's `variants` would otherwise
+        // stay stale and the next click would create a duplicate row.
+        await loadVariants();
+      }
+    }));
+    const actions = el('div', 'v-actions');
+    actions.append(save, note);
+    wrap.appendChild(actions);
+    return wrap;
+  }
+
+  function labelled(text: string | undefined, control: HTMLElement): HTMLElement {
+    const label = el('label');
+    label.appendChild(el('span', undefined, text || ''));
+    label.appendChild(control);
+    return label;
+  }
+
+  function renderVariants() {
+    variantsBox.replaceChildren();
+    if (!current) {
+      variantsBox.appendChild(el('p', 'msg', c['social.composer.nopost']));
+      return;
+    }
+    for (const network of NETWORKS) {
+      variantsBox.appendChild(variantCard(network, variants.find((v) => v.network === network)));
+    }
+  }
+
+  // Never throws: it runs in the `finally` of every write, and a rejection there
+  // would replace the real error with an unhandled one.
+  async function loadVariants() {
+    try {
+      variants = current ? (await listVariantsOf([current.id])).items : [];
+    } catch (e) {
+      variants = [];
+      postMsg.textContent = c['social.composer.error'] || '';
+      handleAuthError(e);
+    }
+    renderVariants();
+  }
+
+  async function select(id: string | null) {
+    current = id ? posts.find((p) => p.id === id) ?? null : null;
+    renderPostList();
+    fillPostForm();
+    await loadVariants();
+  }
+
+  async function load() {
+    if (!isLoggedIn()) {
+      postsMsg.textContent = c['social.auth.required'] || '';
+      postList.replaceChildren();
+      variantsBox.replaceChildren();
+      return;
+    }
+    postsMsg.textContent = c['social.composer.loading'] || '';
+    try {
+      brands = (await listBrands()).items;
+      assets = (await listAssets()).items;
+      posts = (await listPosts()).items;
+      postsMsg.textContent = '';
+      const wanted = new URLSearchParams(window.location.search).get('post');
+      await select(wanted && posts.some((p) => p.id === wanted) ? wanted : current?.id ?? null);
+    } catch (e) {
+      postsMsg.textContent = c['social.composer.error'] || '';
+      // An expired token drops the session and re-announces logged-out, so the
+      // sign-in form comes back instead of a generic error nobody can act on.
+      handleAuthError(e);
+    }
+  }
+
+  postForm.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    postMsg.textContent = c['social.composer.saving'] || '';
+    const data: Partial<Post> = {
+      title: field(postForm, 'title'),
+      body: field(postForm, 'body'),
+      status: field(postForm, 'status'),
+      brand: field(postForm, 'brand'),
+    };
+    // `slot_at` is OMITTED when the input is empty instead of sent as '': an
+    // empty string CLEARS the stored slot, which would drop the post off the week
+    // board on any save that did not fill the field. Un-scheduling is a deliberate
+    // act and needs its own control, not an editing accident.
+    const slot = field(postForm, 'slot_at');
+    if (slot) data.slot_at = fromLocalInput(slot);
+    try {
+      const saved = await savePost(current?.id ?? null, data);
+      postMsg.textContent = c['social.composer.saved'] || '';
+      posts = (await listPosts()).items;
+      await select(saved.id);
+    } catch (e) {
+      postMsg.textContent = c['social.composer.error'] || '';
+      handleAuthError(e);
+    }
+  });
+
+  document.getElementById('social-new-post')?.addEventListener('click', () => {
+    postMsg.textContent = '';
+    void select(null);
+  });
+
+  const fanoutButton = document.getElementById('social-fanout') as HTMLButtonElement | null;
+  fanoutButton?.addEventListener('click', () => void serialised(fanoutButton, async () => {
+    if (!current) { postMsg.textContent = c['social.composer.nopost'] || ''; return; }
+    const post = current;
+    postMsg.textContent = c['social.composer.saving'] || '';
+    try {
+      // No `variants` argument: fanOut re-reads the post's rows itself, so a
+      // retry after a partial failure cannot duplicate the networks it did create.
+      await fanOut(post.id);
+      postMsg.textContent = c['social.composer.saved'] || '';
+    } catch (e) {
+      postMsg.textContent = c['social.composer.error'] || '';
+      handleAuthError(e);
+    } finally {
+      // Even a half-done fan-out must be visible, or the retry works blind.
+      await loadVariants();
+    }
+  }));
+
+  brandForm.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    try {
+      const brand = await createBrand({
+        name: field(brandForm, 'name'),
+        timezone: field(brandForm, 'timezone'),
+        default_locale: field(brandForm, 'default_locale'),
+      });
+      brandForm.reset();
+      brands = (await listBrands()).items;
+      brandSelect.value = brand.id;
+      renderBrands();
+      brandSelect.value = brand.id;
+    } catch (e) {
+      postMsg.textContent = c['social.composer.error'] || '';
+      handleAuthError(e);
+    }
+  });
+
+  // The auth brick's protocol, imported rather than typed: this listened for
+  // `social:auth`, published by a sign-in panel this brick shipped beside the
+  // gate. One door now, and the board re-loads on the same event every app uses.
+  document.addEventListener(SIGNED_IN_EVENT, () => void load());
+  document.addEventListener(SIGNED_OUT_EVENT, () => void load());
+  void load();
+</script>
+
+<style>
+  .cols {
+    display: grid;
+    grid-template-columns: minmax(180px, 240px) 1fr;
+    gap: var(--space-4);
+    align-items: start;
+  }
+  @media (max-width: 720px) {
+    .cols { grid-template-columns: 1fr; }
+  }
+  .picker, .post-form, .brand-new {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-lg);
+    padding: var(--space-4);
+  }
+  .picker h2, .editor h2 { margin: 0 0 var(--space-3); font-size: 1rem; }
+  .note { color: var(--muted); font-size: 0.9rem; }
+  .msg { color: var(--muted); font-size: 0.85rem; }
+  .posts { list-style: none; margin: 0 0 var(--space-3); padding: 0; display: grid; gap: var(--space-2); }
+  .post-form {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+    gap: var(--space-3);
+    margin-bottom: var(--space-4);
+  }
+  .post-form .wide, .post-form .actions { grid-column: 1 / -1; }
+  .actions { display: flex; flex-wrap: wrap; gap: var(--space-3); align-items: center; }
+  .brand-form {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+    gap: var(--space-3);
+    margin-top: var(--space-3);
+    align-items: end;
+  }
+  summary { cursor: pointer; font-weight: 600; }
+  .variants {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+    gap: var(--space-3);
+    margin-top: var(--space-3);
+  }
+
+  /* Shared control skin. The variant cards are created by the script, so their
+     rules have to be global — a scoped selector never matches a node that
+     document.createElement built. */
+  .composer :global(label) {
+    display: grid;
+    gap: var(--space-1);
+    font-size: 0.85rem;
+    color: var(--muted);
+  }
+  .composer :global(input), .composer :global(select), .composer :global(textarea) {
+    font: inherit;
+    color: var(--text);
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: var(--space-2);
+    width: 100%;
+  }
+  .composer :global(button) {
+    font: inherit;
+    font-weight: 600;
+    cursor: pointer;
+    color: var(--primary-contrast);
+    background: var(--primary);
+    border: 1px solid var(--primary);
+    border-radius: var(--radius);
+    padding: var(--space-2) var(--space-3);
+  }
+  .composer :global(button.ghost) {
+    color: var(--text);
+    background: var(--bg);
+    border-color: var(--border);
+  }
+  .posts :global(.post) { display: grid; gap: var(--space-1); }
+  .posts :global(.post button) {
+    text-align: start;
+    color: var(--text);
+    background: var(--bg);
+    border-color: var(--border);
+  }
+  .posts :global(.post.is-current button) { border-color: var(--primary); color: var(--primary); }
+  .posts :global(.pill), .variants :global(.pill) {
+    justify-self: start;
+    font-size: 0.7rem;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: var(--muted);
+  }
+  .variants :global(.variant) {
+    display: grid;
+    gap: var(--space-2);
+    align-content: start;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-lg);
+    padding: var(--space-3);
+  }
+  .variants :global(.variant h3) { margin: 0; font-size: 0.95rem; }
+  .variants :global(.v-actions) { display: flex; gap: var(--space-2); align-items: center; }
+  .variants :global(.v-err) { margin: 0; font-size: 0.8rem; color: var(--danger); }
+</style>

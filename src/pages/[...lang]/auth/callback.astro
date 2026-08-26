@@ -1,0 +1,36 @@
+---
+// Where Supabase sends the browser back after a magic link or a provider
+// sign-in. It exists in every language like any other page, and it is the only
+// page that must NOT be behind the gate.
+import Layout from '../../../layouts/Layout.astro';
+import { localeOf, localePaths, t, unknownLocale } from '../../../lib/i18n';
+
+export const getStaticPaths = localePaths;
+if (unknownLocale(Astro)) return new Response(null, { status: 404 });
+const locale = localeOf(Astro);
+---
+
+<Layout title={t(locale, 'auth.title')} locale={locale}>
+  <p id="auth-callback-msg" data-msg-error={t(locale, 'auth.error')} data-msg-denied={t(locale, 'auth.denied')}>
+    {t(locale, 'auth.callback.working')}
+  </p>
+</Layout>
+
+<script>
+  import { completeCallback, AuthError } from '../../../lib/auth';
+
+  const el = document.getElementById('auth-callback-msg') as HTMLElement;
+  (async () => {
+    try {
+      // Nothing to complete (someone opened the URL by hand) is not an error:
+      // either way the right place to land is the app, gate included.
+      await completeCallback();
+      location.replace('/');
+    } catch (err) {
+      el.textContent =
+        err instanceof AuthError && err.status === 403
+          ? el.dataset.msgDenied ?? ''
+          : el.dataset.msgError ?? '';
+    }
+  })();
+</script>

@@ -1,0 +1,297 @@
+---
+// AuthGate.astro — full-page gate: nothing behind it renders until a Brotea
+// account has been exchanged for a PocketBase session.
+//
+// Two factory gotchas are designed around, not worked around:
+//  1. Astro scoped styles never match `createElement` DOM, so ALL markup here
+//     is server-rendered and the script only flips `data-state`.
+//  2. `[hidden]` loses to any author `display` rule, so visibility is a pair of
+//     attribute selectors on this component's own id — it depends on no global
+//     rule the host app may or may not have.
+//
+// The gate is OPEN by default: if JS never runs, protected content never
+// appears. On success it sets `data-brotea-auth="<role>"` on <html> and fires
+// `SIGNED_IN_EVENT`, so pages can start exactly like they do after any other
+// async unlock — and it REOPENS on `SIGNED_OUT_EVENT`, so an expired token
+// brings the form back instead of leaving a page whose every request 401s.
+// Both names are exported from `lib/auth`: a protocol nobody can import is a
+// protocol the next brick will reinvent.
+import { t } from '../lib/i18n';
+
+interface Props { locale: string }
+const { locale } = Astro.props;
+---
+
+<div
+  id="brotea-auth-gate"
+  data-state="open"
+  data-msg-error={t(locale, 'auth.error')}
+  data-msg-denied={t(locale, 'auth.denied')}
+  data-msg-offline={t(locale, 'auth.offline')}
+  data-msg-sent={t(locale, 'auth.magic.sent')}
+  data-msg-mfa={t(locale, 'auth.mfa.error')}
+>
+  <div class="auth-card">
+    <h2 class="auth-title">{t(locale, 'auth.title')}</h2>
+    <p class="auth-lead">{t(locale, 'auth.signin')}</p>
+
+    <button type="button" class="auth-primary auth-google" id="brotea-auth-google">
+      {t(locale, 'auth.google')}
+    </button>
+    <p class="auth-sep">{t(locale, 'auth.or')}</p>
+
+    <form id="brotea-auth-form">
+      <label>
+        {t(locale, 'auth.email')}
+        <input type="email" name="email" required autocomplete="username" />
+      </label>
+      <label>
+        {t(locale, 'auth.password')}
+        <input type="password" name="password" autocomplete="current-password" />
+      </label>
+      <button type="submit" class="auth-primary">{t(locale, 'auth.signin.submit')}</button>
+      <button type="button" class="auth-link" id="brotea-auth-magic">{t(locale, 'auth.magic.submit')}</button>
+      <p class="auth-msg" id="brotea-auth-msg" role="alert"></p>
+    </form>
+
+    <!-- The second factor. Server-rendered and closed; shown only to somebody
+         who has already proven a password and carries a verified factor, so it
+         is never a prompt anybody has to guess at. -->
+    <form id="brotea-auth-totp" hidden>
+      <h3>{t(locale, 'auth.mfa.title')}</h3>
+      <p class="auth-hint">{t(locale, 'auth.mfa.hint')}</p>
+      <label>
+        {t(locale, 'auth.mfa.code')}
+        <input
+          type="text" name="code" required
+          inputmode="numeric" autocomplete="one-time-code"
+          pattern="[0-9]*" maxlength="8"
+        />
+      </label>
+      <button type="submit" class="auth-primary">{t(locale, 'auth.mfa.submit')}</button>
+    </form>
+
+    <!-- Server-rendered but closed: revealed only when the identity plane does
+         not answer, so it never invites a second door on a normal day. -->
+    <form id="brotea-auth-breakglass" hidden>
+      <h3>{t(locale, 'auth.breakglass')}</h3>
+      <p class="auth-hint">{t(locale, 'auth.breakglass.hint')}</p>
+      <label>
+        {t(locale, 'auth.email')}
+        <input type="email" name="email" required autocomplete="username" />
+      </label>
+      <label>
+        {t(locale, 'auth.password')}
+        <input type="password" name="password" required autocomplete="one-time-code" />
+      </label>
+      <button type="submit" class="auth-primary">{t(locale, 'auth.signin.submit')}</button>
+    </form>
+  </div>
+</div>
+
+<script>
+  import {
+    restore, signInWithPassword, sendMagicLink, signInWithProvider, AuthError, isConfigured,
+    completeMfa, MfaRequiredError, SIGNED_IN_EVENT, SIGNED_OUT_EVENT,
+  } from '../lib/auth';
+  import { login as pbLogin } from '../lib/pb';
+
+  const gate = document.getElementById('brotea-auth-gate') as HTMLElement;
+  const form = document.getElementById('brotea-auth-form') as HTMLFormElement;
+  const msg = document.getElementById('brotea-auth-msg') as HTMLElement;
+  const field = (name: string) => form.elements.namedItem(name) as HTMLInputElement;
+
+  function open(user: { role: string }) {
+    document.documentElement.setAttribute('data-brotea-auth', user.role);
+    gate.dataset.state = 'closed';
+    document.dispatchEvent(new CustomEvent(SIGNED_IN_EVENT, { detail: user }));
+  }
+
+  // A session can end without anybody pressing anything: a token expires and
+  // the next request comes back 401. Before this, the gate stayed closed over an
+  // app whose every request failed — a dead end with no way back to the form,
+  // and the reason the social calendar grew a second sign-in panel of its own.
+  document.addEventListener(SIGNED_OUT_EVENT, () => {
+    document.documentElement.removeAttribute('data-brotea-auth');
+    gate.dataset.state = 'open';
+    msg.textContent = '';
+    // Back to the first step, or the next person meets a code field with no
+    // password behind it.
+    pendingFactor = '';
+    totp.hidden = true;
+    totp.reset();
+    form.hidden = false;
+  });
+
+  /** 403 is "no access", never "wrong password" — saying it wrong sends people
+   *  to reset a password that was fine. */
+  function explain(err: unknown): string {
+    if (err instanceof AuthError && err.status === 403) return gate.dataset.msgDenied ?? '';
+    if (err instanceof AuthError && err.status === 503) {
+      // The identity plane is unreachable. This is the ONLY moment the
+      // emergency door is shown: a permanent second entrance would be a
+      // permanent second attack surface.
+      breakglass.hidden = false;
+      return gate.dataset.msgOffline ?? '';
+    }
+    return gate.dataset.msgError ?? '';
+  }
+
+  const totp = document.getElementById('brotea-auth-totp') as HTMLFormElement;
+  let pendingFactor = '';
+
+  form.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    msg.textContent = '';
+    const btn = form.querySelector('button[type="submit"]') as HTMLButtonElement;
+    btn.disabled = true;
+    try {
+      open(await signInWithPassword(field('email').value, field('password').value));
+    } catch (err) {
+      if (err instanceof MfaRequiredError) {
+        // The password was right. Anything that reads like a credential error
+        // here sends somebody to reset a password that was fine.
+        pendingFactor = err.factorId;
+        form.hidden = true;
+        totp.hidden = false;
+        (totp.elements.namedItem('code') as HTMLInputElement).focus();
+      } else {
+        msg.textContent = explain(err);
+      }
+    } finally {
+      btn.disabled = false;
+    }
+  });
+
+  totp.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    msg.textContent = '';
+    const btn = totp.querySelector('button[type="submit"]') as HTMLButtonElement;
+    btn.disabled = true;
+    try {
+      open(await completeMfa(pendingFactor, String(new FormData(totp).get('code') || '')));
+    } catch (err) {
+      // A wrong code is not a wrong password: stay on this step.
+      msg.textContent = gate.dataset.msgMfa ?? '';
+      totp.reset();
+    } finally {
+      btn.disabled = false;
+    }
+  });
+
+  const breakglass = document.getElementById('brotea-auth-breakglass') as HTMLFormElement;
+
+  // Straight to PocketBase, without touching Supabase — which is the whole
+  // point. `authRule = "role != ''"` still applies, so an emergency password
+  // opens a door that a role already opened; it is not a way to become one.
+  breakglass.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    msg.textContent = '';
+    const data = new FormData(breakglass);
+    try {
+      const record = await pbLogin(String(data.get('email')), String(data.get('password'))) as { role?: string };
+      open({ role: record.role ?? 'member' });
+    } catch {
+      msg.textContent = gate.dataset.msgError ?? '';
+    }
+  });
+
+  document.getElementById('brotea-auth-google')!.addEventListener('click', () => {
+    // Leaves the page: the answer comes back to /auth/callback.
+    signInWithProvider('google').catch(() => { msg.textContent = gate.dataset.msgError ?? ''; });
+  });
+
+  document.getElementById('brotea-auth-magic')!.addEventListener('click', async () => {
+    msg.textContent = '';
+    if (!field('email').reportValidity()) return;
+    try {
+      await sendMagicLink(field('email').value);
+      msg.textContent = gate.dataset.msgSent ?? '';
+    } catch (err) {
+      msg.textContent = explain(err);
+    }
+  });
+
+  // Boot: an already-signed-in browser must not see the form at all.
+  (async () => {
+    if (!isConfigured()) return; // unprovisioned app: leave the gate up, say nothing false
+    const user = await restore();
+    if (user) open(user);
+  })();
+</script>
+
+<style>
+  #brotea-auth-gate {
+    position: fixed;
+    inset: 0;
+    z-index: 1000;
+    display: flex;
+    align-items: flex-start;
+    justify-content: center;
+    padding: var(--space-6) var(--space-4);
+    overflow: auto;
+    background: var(--bg);
+  }
+  /* one extra attribute beats the rule above without !important */
+  #brotea-auth-gate[data-state='closed'] { display: none; }
+  .auth-card,
+  .auth-card * { box-sizing: border-box; }
+  .auth-card {
+    width: 100%;
+    max-width: 420px;
+    padding: var(--space-6);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-lg);
+    background: var(--surface);
+    box-shadow: var(--shadow);
+    color: var(--text);
+    font-family: var(--font-sans);
+  }
+  .auth-title { font-family: var(--font-display); font-size: 1.5rem; margin: 0 0 var(--space-3); }
+  .auth-lead { color: var(--muted); margin: 0 0 var(--space-5); }
+  label { display: block; margin-bottom: var(--space-4); font-weight: 600; font-size: .95rem; }
+  input {
+    display: block;
+    width: 100%;
+    margin-top: .35rem;
+    padding: .55rem;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    background: var(--bg);
+    color: var(--text);
+    font: inherit;
+  }
+  .auth-primary {
+    padding: .7rem 1.6rem;
+    border: 1px solid var(--primary);
+    border-radius: var(--radius);
+    background: var(--primary);
+    color: var(--primary-contrast);
+    font: inherit;
+    font-weight: 600;
+    cursor: pointer;
+  }
+  .auth-primary:hover { filter: brightness(0.92); }
+  .auth-google { width: 100%; margin-bottom: var(--space-4); }
+  .auth-sep {
+    margin: 0 0 var(--space-4);
+    color: var(--muted);
+    font-size: .85rem;
+    text-align: center;
+  }
+  .auth-primary:disabled { opacity: .5; cursor: progress; }
+  .auth-link {
+    display: block;
+    margin-top: var(--space-4);
+    padding: 0;
+    border: 0;
+    background: none;
+    color: var(--muted);
+    font: inherit;
+    font-size: .85rem;
+    text-decoration: underline;
+    cursor: pointer;
+  }
+  .auth-link:hover { color: var(--primary); }
+  .auth-msg { min-height: 1.2em; margin: var(--space-3) 0 0; color: var(--danger); font-size: .9rem; }
+</style>

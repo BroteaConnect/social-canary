@@ -1,0 +1,42 @@
+---
+// Nav links. Feature installs insert their entry after the anchor below —
+// do not remove the `brotea:nav` marker. Every link goes through localePath()
+// so it stays inside the visitor's language.
+import LanguageSwitcher from './LanguageSwitcher.astro';
+import { localePath, t } from '../lib/i18n';
+
+interface Props { locale: string }
+const { locale } = Astro.props;
+---
+
+<nav>
+  <a href={localePath(locale, '/')}>{t(locale, 'nav.home')}</a>
+  <!-- brotea:nav -->
+  <a href={localePath(locale, '/social/calendar')}>{t(locale, 'social.nav.calendar')}</a>
+  <a href={localePath(locale, '/social/composer')}>{t(locale, 'social.nav.composer')}</a>
+  <a href={localePath(locale, '/social/assets')}>{t(locale, 'social.nav.assets')}</a>
+  <LanguageSwitcher locale={locale} />
+</nav>
+
+<style>
+  nav {
+    display: flex;
+    gap: var(--space-4);
+    align-items: center;
+    padding: var(--space-4);
+    border-bottom: 1px solid var(--border);
+    background: var(--surface);
+  }
+  nav :global(a) {
+    color: var(--primary);
+    text-decoration: none;
+    font-weight: 600;
+  }
+  nav :global(a:hover) {
+    text-decoration: underline;
+  }
+  /* the switcher sits at the end, away from the page links */
+  nav :global(.lang) {
+    margin-inline-start: auto;
+  }
+</style>

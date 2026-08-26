@@ -1,0 +1,232 @@
+---
+// Asset library. Files live in the app's own PocketBase; the composer attaches
+// one of them to a variant. Per-network rendering (aspect ratios, durations,
+// signed URLs) is F6's media pipeline — here an asset is a source file plus its
+// checksum, which is what F6 will dedupe on.
+import { ASSET_KINDS } from '../../lib/social';
+import { t } from '../../lib/i18n';
+
+interface Props { locale: string }
+const { locale } = Astro.props;
+---
+
+<section class="assets" id="social-assets">
+  <form class="upload" id="social-asset-form">
+    <label>
+      <span>{t(locale, 'social.assets.file')}</span>
+      <input type="file" name="file" required />
+    </label>
+    <label>
+      <span>{t(locale, 'social.assets.kind')}</span>
+      <select name="kind">
+        {ASSET_KINDS.map((kind) => (
+          <option value={kind}>{t(locale, `social.kind.${kind}`)}</option>
+        ))}
+      </select>
+    </label>
+    <label>
+      <span>{t(locale, 'social.assets.alt')}</span>
+      <input name="alt_text" />
+    </label>
+    <label>
+      <span>{t(locale, 'social.assets.brand')}</span>
+      <select name="brand" id="social-asset-brand"></select>
+    </label>
+    <div class="actions">
+      <button type="submit">{t(locale, 'social.assets.upload')}</button>
+      <span class="msg" id="social-asset-msg" role="status"></span>
+    </div>
+  </form>
+
+  <ul class="list" id="social-asset-list"></ul>
+</section>
+
+<script>
+  import {
+    checksumOf, copy, deleteAsset, el, handleAuthError, listAssets, listBrands, option,
+    uploadAsset,
+    type Asset, type Brand,
+  } from '../../lib/social';
+  import { fileUrl, isLoggedIn } from '../../lib/pb';
+  import { SIGNED_IN_EVENT, SIGNED_OUT_EVENT } from '../../lib/auth';
+
+  const c = copy();
+  const form = document.getElementById('social-asset-form') as HTMLFormElement;
+  const msg = document.getElementById('social-asset-msg') as HTMLElement;
+  const brandSelect = document.getElementById('social-asset-brand') as HTMLSelectElement;
+  const listBox = document.getElementById('social-asset-list') as HTMLElement;
+
+  let brands: Brand[] = [];
+  let assets: Asset[] = [];
+
+  function renderBrands() {
+    brandSelect.replaceChildren(option('', c['social.composer.brandnone'] || ''));
+    for (const b of brands) brandSelect.appendChild(option(b.id, b.name));
+  }
+
+  function card(asset: Asset): HTMLElement {
+    const item = el('li', 'asset');
+    if (asset.kind === 'image' && asset.file) {
+      const img = el('img', 'thumb');
+      img.src = `${fileUrl(asset, asset.file)}?thumb=600x400`;
+      img.alt = asset.alt_text || '';
+      img.loading = 'lazy';
+      item.appendChild(img);
+    }
+    item.appendChild(el('p', 'name', asset.file || asset.id));
+    item.appendChild(el('p', 'meta', c[`social.kind.${asset.kind}`] || asset.kind));
+    if (asset.alt_text) item.appendChild(el('p', 'meta', asset.alt_text));
+    if (asset.checksum) {
+      item.appendChild(el('p', 'meta', `${c['social.assets.checksum']}: ${asset.checksum.slice(0, 12)}`));
+    }
+    const del = el('button', 'ghost', c['social.assets.delete']);
+    del.type = 'button';
+    del.addEventListener('click', async () => {
+      try {
+        await deleteAsset(asset.id);
+        await load();
+      } catch (e) {
+        msg.textContent = c['social.assets.error'] || '';
+        handleAuthError(e);
+      }
+    });
+    item.appendChild(del);
+    return item;
+  }
+
+  function renderAssets() {
+    listBox.replaceChildren();
+    if (!assets.length) {
+      listBox.appendChild(el('li', 'empty', c['social.assets.empty']));
+      return;
+    }
+    for (const asset of assets) listBox.appendChild(card(asset));
+  }
+
+  async function load() {
+    if (!isLoggedIn()) {
+      msg.textContent = c['social.auth.required'] || '';
+      listBox.replaceChildren();
+      return;
+    }
+    msg.textContent = c['social.assets.loading'] || '';
+    try {
+      brands = (await listBrands()).items;
+      renderBrands();
+      assets = (await listAssets()).items;
+      renderAssets();
+      msg.textContent = '';
+    } catch (e) {
+      msg.textContent = c['social.assets.error'] || '';
+      // An expired token: drop it and re-announce, so the sign-in form returns.
+      handleAuthError(e);
+    }
+  }
+
+  form.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    const data = new FormData(form);
+    const file = data.get('file');
+    if (!(file instanceof File) || !file.size) return;
+    msg.textContent = c['social.assets.uploading'] || '';
+    try {
+      data.set('checksum', await checksumOf(file));
+      await uploadAsset(data);
+      form.reset();
+      await load();
+      msg.textContent = c['social.assets.uploaded'] || '';
+    } catch (e) {
+      msg.textContent = c['social.assets.error'] || '';
+      handleAuthError(e);
+    }
+  });
+
+  // The auth brick's protocol, imported rather than typed: this listened for
+  // `social:auth`, published by a sign-in panel this brick shipped beside the
+  // gate. One door now, and the board re-loads on the same event every app uses.
+  document.addEventListener(SIGNED_IN_EVENT, () => void load());
+  document.addEventListener(SIGNED_OUT_EVENT, () => void load());
+  void load();
+</script>
+
+<style>
+  .upload {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+    gap: var(--space-3);
+    align-items: end;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-lg);
+    padding: var(--space-4);
+  }
+  .actions { grid-column: 1 / -1; display: flex; gap: var(--space-3); align-items: center; }
+  .msg { color: var(--muted); font-size: 0.85rem; }
+  .list {
+    list-style: none;
+    margin: var(--space-4) 0 0;
+    padding: 0;
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+    gap: var(--space-3);
+  }
+
+  .assets :global(label) {
+    display: grid;
+    gap: var(--space-1);
+    font-size: 0.85rem;
+    color: var(--muted);
+  }
+  .assets :global(input), .assets :global(select) {
+    font: inherit;
+    color: var(--text);
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: var(--space-2);
+    width: 100%;
+  }
+  .assets :global(button) {
+    font: inherit;
+    font-weight: 600;
+    cursor: pointer;
+    color: var(--primary-contrast);
+    background: var(--primary);
+    border: 1px solid var(--primary);
+    border-radius: var(--radius);
+    padding: var(--space-2) var(--space-3);
+  }
+  .assets :global(button.ghost) {
+    color: var(--text);
+    background: var(--bg);
+    border-color: var(--border);
+    justify-self: start;
+  }
+
+  /* Cards below are built by the script — global rules only. */
+  .list :global(.asset) {
+    display: grid;
+    gap: var(--space-1);
+    align-content: start;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-lg);
+    padding: var(--space-3);
+  }
+  .list :global(.thumb) {
+    width: 100%;
+    aspect-ratio: 3 / 2;
+    object-fit: cover;
+    border-radius: var(--radius);
+    background: var(--bg);
+  }
+  .list :global(.name) { margin: 0; font-weight: 600; font-size: 0.9rem; overflow-wrap: anywhere; }
+  .list :global(.meta) { margin: 0; font-size: 0.8rem; color: var(--muted); overflow-wrap: anywhere; }
+  .list :global(.empty) {
+    color: var(--muted);
+    font-size: 0.9rem;
+    border: 1px dashed var(--border);
+    border-radius: var(--radius);
+    padding: var(--space-3);
+  }
+</style>

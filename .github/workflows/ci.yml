@@ -1,0 +1,74 @@
+name: CI
+# GENERATED FILE by `brotea quality sync` (quality/gate-ci.yml in the factory).
+# Do not edit it here: change the catalog and re-sync, or the next fleet
+# migration will stomp on your changes.
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      # Build stamp + the app's tests + type check + build.
+      # The `test` script is materialized by the same capability, so every repo
+      # checks the same thing and they all update in one place.
+      - run: npm test
+
+  docker:
+    # Production does not build with `npm ci`: it builds with the Dockerfile.
+    # Green CI was not proof of a green deploy — a committed node_modules
+    # symlink took a deploy down on 2026-08-01 with green CI. This step builds
+    # exactly what Coolify will build.
+    #
+    # On pull requests ONLY, and that is a deliberate trade. Nothing reaches
+    # main except a squash of a pull request whose exact tree was built here
+    # minutes earlier, so the push-to-main run was building the same bytes a
+    # second time — and Coolify then builds them a third. What the second build
+    # would catch is the rare case where main moved in between; the cost of
+    # missing it is a FAILED DEPLOY, not a broken site: Coolify keeps the
+    # running container when a build fails, and the deploy reports it.
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build the real image
+        run: docker build -t ci-check:${{ github.sha }} .
+      # A file existing inside the image does not prove the image SERVES. And
+      # `test -f /usr/share/nginx/html/index.html` additionally assumed a
+      # runtime: nginx serving static files. Any app with its own server (SSR,
+      # API) failed a GENERATED gate that the repo is forbidden to edit. Now the
+      # gate boots the image and talks to it: it works for both shapes and
+      # checks what actually matters.
+      - name: The image really serves
+        run: |
+          # Service contract, in brotea.json. By default, the same old static
+          # setup: nginx on 80 and the root. That way the check is the same for
+          # the whole fleet and a different runtime is DATA, not another
+          # workflow.
+          port=$(jq -r '.runtime.port // 80' brotea.json)
+          health=$(jq -r '.runtime.health // "/"' brotea.json)
+          # Ephemeral port, not a fixed one: an occupied 8080 on the runner
+          # would fail the gate over a collision unrelated to the app.
+          docker run -d --name ci-app -p 127.0.0.1::"$port" ci-check:${{ github.sha }}
+          addr=$(docker port ci-app "$port"/tcp | head -1)
+          for _ in $(seq 1 30); do
+            code=$(curl -fsS -o /dev/null -w '%{http_code}' "http://$addr$health" || true)
+            [ "$code" = "200" ] && ok=1 && break
+            sleep 1
+          done
+          # The logs ALWAYS: a container that dies on boot with no logs leaves
+          # the failure undiagnosed and forces a local reproduction.
+          echo "--- docker logs ---"; docker logs ci-app 2>&1 | tail -50
+          docker rm -f ci-app >/dev/null 2>&1 || true
+          [ "${ok:-}" = "1" ] || {
+            echo "::error::the image does not serve 200 at $health (port $port, last code: ${code:-no response})"
+            exit 1
+          }

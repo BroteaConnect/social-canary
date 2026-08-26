@@ -1,0 +1,22 @@
+---
+// Asset library: what the composer can attach to a variant.
+import Layout from '../../../layouts/Layout.astro';
+import AssetLibrary from '../../../components/social/AssetLibrary.astro';
+import AuthGate from '../../../components/AuthGate.astro';
+import AuthStatus from '../../../components/AuthStatus.astro';
+import SocialCopy from '../../../components/social/SocialCopy.astro';
+import { localeOf, localePaths, t, unknownLocale } from '../../../lib/i18n';
+
+export const getStaticPaths = localePaths;
+if (unknownLocale(Astro)) return new Response(null, { status: 404 });
+const locale = localeOf(Astro);
+---
+
+<Layout title={t(locale, 'social.assets.title')} locale={locale}>
+  <h1>{t(locale, 'social.assets.title')}</h1>
+  <p>{t(locale, 'social.assets.subtitle')}</p>
+  <SocialCopy locale={locale} />
+  <AuthGate locale={locale} />
+  <AuthStatus locale={locale} />
+  <AssetLibrary locale={locale} />
+</Layout>
