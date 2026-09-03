@@ -1,10 +1,11 @@
 {
   "schema": 2,
-  "composer": "0.6.0",
+  "composer": "0.7.0",
   "stack": "astro",
   "template": {
     "name": "astro",
-    "version": "1.0.0"
+    "version": "1.0.0",
+    "owned": "1.2.0"
   },
   "project": {
     "slug": "social-canary",
@@ -64,7 +65,7 @@
   },
   "theme": {
     "name": "brotea",
-    "version": "2.1.0"
+    "version": "2.2.0"
   },
   "i18n": {
     "defaultLocale": "es",

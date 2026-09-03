@@ -1,17 +1,109 @@
 /* Base element styles — template-owned, themed entirely through the token
- * variables in theme.css (see docs/theme-contract.md). */
+ * variables in theme.css (see docs/theme-contract.md).
+ *
+ * Everything below the box model is a rendering detail, not a design: font
+ * smoothing, orphan control, stable digits, a visible keyboard focus, a press
+ * that answers the hand, and less motion for people who asked for less. No
+ * interface is "designed" by these rules; every interface is quietly worse
+ * without them. A colour, a curve or a duration written here would be one no
+ * theme can change, so there are none. */
 * { box-sizing: border-box; }
+html {
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
 body {
   margin: 0;
   background: var(--bg);
   color: var(--text);
   font-family: var(--font-sans);
 }
-h1, h2, h3 { font-family: var(--font-display); }
+h1, h2, h3 {
+  font-family: var(--font-display);
+  text-wrap: balance;
+}
+/* `pretty` keeps the last line from being a single dangling word; it works on
+ * any length, unlike `balance`, which browsers cap at a few lines. */
+p, li, dd, figcaption, blockquote { text-wrap: pretty; }
 a { color: var(--primary); }
 code {
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: calc(var(--radius) / 2);
   padding: 0 var(--space-1);
+}
+img, video {
+  max-width: 100%;
+  height: auto;
+}
+/* A neutral hairline inset on a PICTURE: consistent depth next to the bordered
+ * surfaces, and never a tinted colour that reads as dirt. Only on images
+ * presented as figures or marked `.photo`: a transparent logo or an icon in
+ * an <img> would otherwise show the rectangle around nothing. */
+figure > img, img.photo {
+  outline: 1px solid var(--outline-image);
+  outline-offset: -1px;
+}
+/* Digits that change must not move their neighbours: timers, counters, prices,
+ * table columns. Opt a static number out with `font-variant-numeric: normal`. */
+time, output, td, [data-num] { font-variant-numeric: tabular-nums; }
+
+/* Keyboard focus is visible; a mouse click does not leave a ring behind. */
+:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 2px;
+}
+:focus:not(:focus-visible) { outline: none; }
+
+/* Anything pressable answers the press. Transitions, never keyframes, so a
+ * release mid-press retargets smoothly instead of restarting. Only the
+ * properties that actually change are transitioned — `all` watches every
+ * property and animates the ones nobody meant. */
+button, [role="button"], .button, input[type="submit"] {
+  transition-property: scale, background-color, color, border-color, box-shadow, opacity;
+  transition-duration: var(--duration-press);
+  transition-timing-function: var(--ease-out);
+}
+button:active:not(:disabled), [role="button"]:active, .button:active, input[type="submit"]:active:not(:disabled) {
+  scale: var(--press-scale);
+}
+
+/* The primary call to action, so a brick does not draw its own. Tall enough to
+ * hit with a thumb; the hover is a mix in tokens rather than a filter, because
+ * a filter darkens a glow-yellow button on an eggplant ground the wrong way. */
+.button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2);
+  min-height: 2.75rem;
+  padding: var(--space-2) var(--space-4);
+  border: 0;
+  border-radius: var(--radius);
+  background: var(--primary);
+  color: var(--primary-contrast);
+  font: inherit;
+  font-weight: 600;
+  line-height: 1.2;
+  text-decoration: none;
+  cursor: pointer;
+}
+@media (hover: hover) and (pointer: fine) {
+  .button:hover { background: color-mix(in oklab, var(--primary) 88%, var(--text)); }
+}
+.button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+/* Reduced motion means less, not none: transitions collapse to instant, so
+ * every state still lands, and nothing moves on its own. */
+@media (prefers-reduced-motion: reduce) {
+  *, ::before, ::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    animation-delay: 0ms !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
 }
